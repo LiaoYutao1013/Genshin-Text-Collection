@@ -1,0 +1,10 @@
+Metadata-Version: 2.4
+Name: genshin-text-collection
+Version: 0.2.0
+Summary: Local Project Amber simplified-Chinese text collection tools
+Requires-Python: >=3.10
+Requires-Dist: httpx<0.29,>=0.28
+Requires-Dist: rich<15,>=14
+Requires-Dist: typer<0.26,>=0.25
+Requires-Dist: Flask<3.2,>=3.1
+Requires-Dist: nbformat<6,>=5.11

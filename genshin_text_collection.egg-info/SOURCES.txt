@@ -1,0 +1,15 @@
+README.md
+pyproject.toml
+genshin_text/__init__.py
+genshin_text/cli.py
+genshin_text/collector.py
+genshin_text/exporter.py
+genshin_text/search.py
+genshin_text/store.py
+genshin_text/web.py
+genshin_text_collection.egg-info/PKG-INFO
+genshin_text_collection.egg-info/SOURCES.txt
+genshin_text_collection.egg-info/dependency_links.txt
+genshin_text_collection.egg-info/entry_points.txt
+genshin_text_collection.egg-info/requires.txt
+genshin_text_collection.egg-info/top_level.txt

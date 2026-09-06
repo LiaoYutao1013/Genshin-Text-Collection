@@ -1,0 +1,61 @@
+# Genshin Text Collection
+
+从 Project Amber（安柏网）公开的简体中文数据接口建立本地、可全文检索的原神文本库。
+
+> 内容的著作权归米哈游及各原始权利人所有。本项目仅供个人离线查阅、研究和打印；请遵守来源站点的服务条款、robots 规则和当地法律，不要将导出的完整数据重新发布。
+
+## 快速开始
+
+```bash
+conda activate yolo
+./scripts/setup.sh
+./scripts/crawl.sh --check-only
+./scripts/crawl.sh
+./scripts/serve.sh
+```
+
+浏览器打开 `http://127.0.0.1:8765`。工程使用 `yolo` Conda 环境中的 `httpx`、Rich、Typer、Flask 和 nbformat；依赖版本记录于 `requirements-yolo.txt`。数据写入 `data/genshin.sqlite3`，原始 API 响应缓存于 `data/raw/`，可随时中断后重新执行抓取命令。
+
+`./scripts/setup.sh` 会将工程以可编辑模式安装到 `yolo` 环境。因此 `notebooks/` 下的 Notebook 可从任意工作目录直接打开；首格会从已安装包的位置定位工程目录，无需切换 Jupyter 的启动目录。
+
+## 抓取策略
+
+默认来源是 `https://gi.yatta.moe/api/v2/chs/`，语言固定为简体中文。采集器按分类索引逐条取得条目详情，涵盖任务（魔神、传说、活动、世界任务等由条目标签/字段分组）、角色资料、武器、圣遗物、书籍/图鉴等。它会：
+
+- 每个请求至少间隔 2.5 秒，且只有一个并发请求；
+- 请求前检查 `robots.txt`；
+- 使用本地缓存和 SQLite 进度，避免重复下载；
+- 网络错误指数退避；收到 `403`、`429`、Cloudflare 验证页或 robots 禁止时立即停止；
+- 不使用代理、验证码绕过或规避访问控制。
+
+接口字段或分类发生变化时，可通过 `--categories` 指定实际分类，例如：
+
+```bash
+./scripts/crawl.sh --categories quest,avatar,weapon,reliquary,book
+```
+
+先用 `--limit 3` 验证当前接口，再开始完整抓取：
+
+```bash
+./scripts/crawl.sh --limit 3
+./scripts/crawl.sh
+```
+
+## 命令行检索与导出
+
+```bash
+./scripts/search.sh "璃月 港口"
+./scripts/export.sh --format html --query "安柏" --output exports/amber.html
+./scripts/export.sh --format markdown --category "任务/世界任务" --output exports/world-quests.md
+```
+
+HTML 导出带打印样式；在浏览器中打开后使用打印功能即可。导出范围默认为全库，建议用关键词或分类缩小打印内容。
+
+## 目录
+
+- `genshin_text/collector.py`: 礼貌、可恢复的 API 采集核心。
+- `genshin_text/store.py`: SQLite + FTS5 本地索引。
+- `genshin_text/web.py`: Flask 本地检索和打印页面。
+- `genshin_text/cli.py`: `collect`、`search`、`export`、`serve` 统一命令。
+- `notebooks/`: 可逐格记录 robots 检查、试抓、全量采集、检索与导出过程。
+- `data/`: 运行时数据库与原始缓存（不纳入版本控制）。
