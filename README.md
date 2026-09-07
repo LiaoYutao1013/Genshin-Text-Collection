@@ -41,6 +41,12 @@ conda activate yolo
 ./scripts/crawl.sh
 ```
 
+如果早期版本已经下载了主条目但遗漏角色故事、武器故事或圣遗物五件套故事，请运行以下补全命令。它不会重新下载主条目，只会读取 `data/raw/` 中已有 JSON 并补抓关联故事：
+
+```bash
+./scripts/crawl.sh --categories avatar,weapon,reliquary --refresh-linked
+```
+
 ## 命令行检索与导出
 
 ```bash

@@ -24,6 +24,7 @@ def collect(
     delay: float = typer.Option(2.5, min=2.0, help="最小请求间隔（秒）"),
     limit: int | None = typer.Option(None, min=1, help="每个分类的最大条数，用于试抓"),
     check_only: bool = typer.Option(False, help="仅验证 robots.txt"),
+    refresh_linked: bool = typer.Option(False, help="使用已有主 JSON 补抓角色、武器和圣遗物关联故事"),
 ) -> None:
     """采集简体中文数据；403/429/验证码会立即停止。"""
     try:
@@ -32,6 +33,7 @@ def collect(
             config=CollectionConfig(db_path=db, raw_dir=raw_dir, delay_seconds=delay),
             limit=limit,
             check_only=check_only,
+            refresh_linked=refresh_linked,
             console=console,
         )
     except AccessStopped as exc:

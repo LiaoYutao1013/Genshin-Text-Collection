@@ -1,3 +1,4 @@
+LICENSE
 README.md
 pyproject.toml
 genshin_text/__init__.py
