@@ -4,6 +4,14 @@ import argparse
 import html
 from pathlib import Path
 
+from .presentation import (
+    DEFAULT_RAW_DIR,
+    chrome_pdf,
+    collection_body,
+    document_inner_html,
+    html_export_page,
+    matching_character_groups,
+)
 from .store import Store
 
 
@@ -25,42 +33,89 @@ def plain(rows) -> str:
     return "\n".join(parts)
 
 
-def html_document(rows) -> str:
+def html_document(rows, raw_dir: Path = DEFAULT_RAW_DIR) -> str:
+    """HTML/PDF source for arbitrary documents.
+
+    For the CLI, character rows are better grouped with :func:`character_export`.
+    This formatter intentionally uses the same visual language for single and
+    generic documents.
+    """
     articles = []
     for row in rows:
-        content = html.escape(row["content"])
-        content = content.replace("\n", "<br>\n")
         articles.append(
-            f"<article><p class=category>{html.escape(row['category'])}</p>"
-            f"<h2>{html.escape(row['title'])}</h2><div class=content>{content}</div>"
-            f"<p class=source>来源：<a href={html.escape(row['source_url'], quote=True)}>{html.escape(row['source_url'])}</a></p></article>"
+            '<section class="article-card"><p class="category">'
+            f'{html.escape(row["category"])}</p><h2>{html.escape(row["title"])}</h2>'
+            + document_inner_html(row, raw_dir)
+            + f'<p class="source">来源：<a href="{html.escape(row["source_url"], quote=True)}">'
+            + html.escape(row["source_url"])
+            + "</a></p></section>"
         )
-    return """<!doctype html><html lang=zh-CN><meta charset=utf-8><title>原神文本收藏</title>
-<style>body{max-width:850px;margin:2rem auto;font-family:"Noto Serif CJK SC","Source Han Serif SC",serif;line-height:1.75;color:#1f2937;padding:0 1rem}h1{border-bottom:2px solid #334155}.category{color:#64748b;font-size:.9rem;margin-bottom:0}h2{margin-top:.15rem}.content{white-space:normal}article{break-inside:avoid;border-bottom:1px solid #d1d5db;padding:1rem 0}.source{font-size:.8rem;color:#64748b}@media print{body{max-width:none;margin:0;font-size:10.5pt}a{color:inherit;text-decoration:none}article{page-break-inside:avoid}}</style>
-<h1>原神文本收藏</h1>""" + "\n".join(articles) + "</html>"
+    body = '<p class="category">检索导出</p><h1>原神文本收藏</h1><div class="ornament">◆</div>'
+    body += "\n".join(articles)
+    return html_export_page("原神文本收藏", body)
+
+
+def character_export(store: Store, rows, raw_dir: Path = DEFAULT_RAW_DIR, query: str = "") -> str:
+    """Group avatar rows into one page per character."""
+    body = '<p class="category">检索导出</p><h1>原神文本收藏</h1><div class="ornament">◆</div>'
+    body += collection_body(store, rows, raw_dir, query)
+    # collection_body repeats its own title; keep the standalone export title only.
+    body = body.replace(
+        '<p class="category">检索导出</p><h1>原神文本收藏</h1><div class="ornament">◆</div>',
+        '<p class="category">角色文本</p><h1>角色资料</h1><div class="ornament">◆</div>',
+        1,
+    )
+    return html_export_page("角色资料", body)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Export the local Genshin text collection.")
     parser.add_argument("--db", type=Path, default=Path("data/genshin.sqlite3"))
+    parser.add_argument("--raw-dir", type=Path, default=DEFAULT_RAW_DIR)
     parser.add_argument("--query", default="")
     parser.add_argument("--category", default="")
-    parser.add_argument("--format", choices=("markdown", "text", "html"), default="html")
+    parser.add_argument("--format", choices=("markdown", "text", "html", "pdf"), default="html")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+
     store = Store(args.db)
     try:
         rows = list(store.iter_documents(args.query, args.category))
+        if not rows:
+            print("No documents matched; no file written.")
+            return 2
+
+        if args.category == "角色/故事" or any(row["category"] == "角色/故事" for row in rows):
+            rendered = character_export(store, rows, args.raw_dir, args.query)
+            character_count = len(matching_character_groups(store, args.raw_dir, args.query))
+            if args.format == "markdown":
+                rendered = markdown(rows)
+            elif args.format == "text":
+                rendered = plain(rows)
+            elif args.format == "pdf":
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                chrome_pdf(rendered, args.output)
+                print(f"Exported {character_count} characters to {args.output}")
+                return 0
+        else:
+            rendered = {"markdown": markdown, "text": plain, "html": html_document, "pdf": html_document}[
+                args.format
+            ](rows, args.raw_dir)
+            if args.format == "pdf":
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                chrome_pdf(rendered, args.output)
+                print(f"Exported {len(rows)} documents to {args.output}")
+                return 0
+
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(rendered, encoding="utf-8")
+        if args.category == "角色/故事" or any(row["category"] == "角色/故事" for row in rows):
+            print(f"Exported {character_count} characters to {args.output}")
+        else:
+            print(f"Exported {len(rows)} documents to {args.output}")
+        return 0
     finally:
         store.close()
-    if not rows:
-        print("No documents matched; no file written.")
-        return 2
-    rendered = {"markdown": markdown, "text": plain, "html": html_document}[args.format](rows)
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(rendered, encoding="utf-8")
-    print(f"Exported {len(rows)} documents to {args.output}")
-    return 0
 
 
 if __name__ == "__main__":

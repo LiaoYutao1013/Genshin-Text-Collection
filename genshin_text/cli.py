@@ -9,7 +9,8 @@ from rich.console import Console
 from rich.table import Table
 
 from .collector import AccessStopped, CollectionConfig, DEFAULT_CATEGORIES, crawl
-from .exporter import html_document, markdown, plain
+from .exporter import character_export, html_document, markdown, plain
+from .presentation import DEFAULT_RAW_DIR, chrome_pdf, matching_character_groups
 from .store import Store
 
 app = typer.Typer(no_args_is_help=True, help="原神文本收藏：本地采集、检索、导出与浏览。")
@@ -66,37 +67,57 @@ def search(
 @app.command("export")
 def export_collection(
     output: Path = typer.Option(..., "--output", "-o", help="输出文件"),
-    format: str = typer.Option("html", help="html、markdown 或 text"),
+    format: str = typer.Option("html", help="html、pdf、markdown 或 text"),
     query: str = typer.Option("", help="可选关键词筛选"),
     category: str = typer.Option("", help="可选分类筛选"),
     db: Path = typer.Option(Path("data/genshin.sqlite3")),
+    raw_dir: Path = typer.Option(DEFAULT_RAW_DIR, help="原始 JSON 缓存目录"),
 ) -> None:
-    """将全部或筛选后的本地文本导出为适合打印的文件。"""
-    formatters = {"html": html_document, "markdown": markdown, "text": plain}
-    if format not in formatters:
-        raise typer.BadParameter("format 必须为 html、markdown 或 text")
+    """将全部或筛选后的本地文本导出为适合打印或分享的文件。"""
+    if format not in {"html", "pdf", "markdown", "text"}:
+        raise typer.BadParameter("format 必须为 html、pdf、markdown 或 text")
     store = Store(db)
     try:
         rows = list(store.iter_documents(query, category))
+        if not rows:
+            raise typer.Exit("没有匹配的本地文本，未创建文件。")
+        output.parent.mkdir(parents=True, exist_ok=True)
+        character_mode = category == "角色/故事" or any(row["category"] == "角色/故事" for row in rows)
+        exported_count: int | None = None
+        if character_mode:
+            if format == "markdown":
+                rendered = markdown(rows)
+            elif format == "text":
+                rendered = plain(rows)
+            else:
+                rendered = character_export(store, rows, raw_dir, query)
+                exported_count = len(matching_character_groups(store, raw_dir, query))
+        else:
+            formatters = {"html": html_document, "pdf": html_document, "markdown": markdown, "text": plain}
+            rendered = formatters[format](rows, raw_dir)
+        if format == "pdf":
+            chrome_pdf(rendered, output)
+        else:
+            output.write_text(rendered, encoding="utf-8")
     finally:
         store.close()
-    if not rows:
-        raise typer.Exit("没有匹配的本地文本，未创建文件。")
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(formatters[format](rows), encoding="utf-8")
-    console.print(f"[green]已导出 {len(rows)} 条文本至 {output}[/green]")
+    if exported_count is not None:
+        console.print(f"[green]已导出 {exported_count} 位角色至 {output}[/green]")
+    else:
+        console.print(f"[green]已导出 {len(rows)} 条文本至 {output}[/green]")
 
 
 @app.command()
 def serve(
     db: Path = typer.Option(Path("data/genshin.sqlite3")),
     port: int = typer.Option(8765, min=1024, max=65535),
+    raw_dir: Path = typer.Option(DEFAULT_RAW_DIR, help="原始 JSON 缓存目录"),
 ) -> None:
     """在 127.0.0.1 启动本地检索页面。"""
     console.print(f"[green]打开 http://127.0.0.1:{port}[/green]")
     from .web import serve as run_server
 
-    run_server(db, port)
+    run_server(db, raw_dir, port)
 
 
 if __name__ == "__main__":
