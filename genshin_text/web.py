@@ -5,14 +5,17 @@ from __future__ import annotations
 import html
 import io
 import os
+from collections import OrderedDict
 from pathlib import Path
 
-from flask import Flask, Response, abort, render_template, request, send_file, url_for
+from flask import Flask, Response, abort, redirect, render_template, request, send_file, url_for
 
 from .presentation import (
     BASE_CSS,
     DEFAULT_RAW_DIR,
     NAV_ITEMS,
+    QUEST_TYPE_LABELS,
+    QUEST_TYPE_ORDER,
     character_groups,
     character_inner_html,
     character_profile,
@@ -20,7 +23,10 @@ from .presentation import (
     document_inner_html,
     html_export_page,
     html_to_pdf_bytes,
+    load_quest_catalog,
     matching_character_groups,
+    matching_quest_entries,
+    quest_metadata_for_row,
 )
 from .store import Store
 
@@ -73,20 +79,85 @@ def create_app(db_path: str | Path | None = None, raw_dir: str | Path | None = N
         result = []
         for row in rows:
             text = " ".join(row["content"].split())
+            if row["category"] == "任务":
+                meta = quest_metadata_for_row(row, raw_directory())
+                title = meta.get("display_label") or row["title"]
+                category = meta.get("type_label") or row["category"]
+                preview = meta.get("description") or text[:180]
+            else:
+                title = row["title"]
+                category = row["category"]
+                preview = text[:180] + ("…" if len(text) > 180 else "")
             result.append({
                 "source_key": row["source_key"],
-                "category": row["category"],
-                "title": row["title"],
+                "category": category,
+                "title": title,
                 "source_url": row["source_url"],
                 "payload_path": row["payload_path"],
-                "preview": text[:180] + ("…" if len(text) > 180 else ""),
+                "preview": preview,
             })
         return result
+
+    def quest_preview_rows(entries: list[dict]) -> list[dict]:
+        rows = []
+        for entry in entries:
+            item_id = entry["id"]
+            rows.append({
+                "source_key": entry["source_key"],
+                "category": entry["type_label"],
+                "title": entry["display_label"],
+                "source_url": f"https://gi.yatta.moe/api/v2/chs/quest/{item_id}",
+                "payload_path": f"data/raw/quest/{item_id}.json",
+                "preview": entry.get("description") or "",
+            })
+        return rows
+
+    def quest_groups(entries: list[dict]) -> list[dict]:
+        groups: "OrderedDict[tuple[str, str], dict]" = OrderedDict()
+        for entry in entries:
+            key = (entry["quest_type"], entry["region"])
+            if key not in groups:
+                groups[key] = {
+                    "type_label": entry["type_label"],
+                    "region": entry["region"],
+                    "entries": [],
+                }
+            groups[key]["entries"].append(entry)
+        return list(groups.values())
+
+    def quest_view_context(query: str, quest_type: str) -> dict:
+        raw = raw_directory()
+        all_entries = load_quest_catalog(raw)
+        type_counts = [{"key": "", "label": "全部任务类型", "count": len(all_entries)}]
+        for key in QUEST_TYPE_ORDER:
+            label = QUEST_TYPE_LABELS[key]
+            type_key = "unclassified" if key is None else key
+            count = sum(1 for entry in all_entries if entry["quest_type"] == key)
+            type_counts.append({"key": type_key, "label": label, "count": count})
+
+        store = database()
+        try:
+            entries = matching_quest_entries(store, raw, query)
+        finally:
+            store.close()
+
+        if quest_type == "unclassified":
+            entries = [entry for entry in entries if entry["quest_type"] is None]
+        elif quest_type:
+            entries = [entry for entry in entries if entry["quest_type"] == quest_type]
+
+        return {
+            "entries": entries,
+            "groups": quest_groups(entries),
+            "type_counts": type_counts,
+        }
 
     @app.get("/")
     def index() -> str:
         query = request.args.get("q", "").strip()
         category = request.args.get("category", "").strip()
+        if category == "任务":
+            return redirect(url_for("quests", q=query))
         store = database()
         try:
             categories = store.categories()
@@ -101,6 +172,12 @@ def create_app(db_path: str | Path | None = None, raw_dir: str | Path | None = N
                 rows = preview_rows([row for row in found if row["category"] != "角色/故事"])
                 if avatar_rows:
                     character_results = matching_character_groups(store, raw_directory(), query)
+                if not category and query:
+                    task_entries = matching_quest_entries(store, raw_directory(), query)
+                    merged = {row["source_key"]: row for row in rows}
+                    for task_row in quest_preview_rows(task_entries):
+                        merged[task_row["source_key"]] = task_row
+                    rows = sorted(merged.values(), key=lambda row: (row["category"], row["title"]))
         finally:
             store.close()
 
@@ -193,6 +270,33 @@ def create_app(db_path: str | Path | None = None, raw_dir: str | Path | None = N
         filename = f"genshin-{profile['basic']['name']}.pdf"
         return pdf_response(html_export_page(profile["basic"]["name"], body, "characters"), filename)
 
+    @app.get("/quests")
+    def quests() -> str:
+        query = request.args.get("q", "").strip()
+        quest_type = request.args.get("type", "").strip()
+        context = quest_view_context(query, quest_type)
+        return render_template(
+            "quests.html",
+            **common(active_nav="quest"),
+            query=query,
+            quest_type=quest_type,
+            **context,
+        )
+
+    @app.get("/quests.pdf")
+    def quests_pdf() -> Response:
+        query = request.args.get("q", "").strip()
+        quest_type = request.args.get("type", "").strip()
+        context = quest_view_context(query, quest_type)
+        html_text = render_template(
+            "quests.html",
+            **common(active_nav="quest"),
+            query=query,
+            quest_type=quest_type,
+            **context,
+        )
+        return pdf_response(html_text, "genshin-quests.pdf")
+
     @app.get("/document/<path:source_key>")
     def document(source_key: str) -> str:
         store = database()
@@ -203,13 +307,21 @@ def create_app(db_path: str | Path | None = None, raw_dir: str | Path | None = N
             store.close()
         if row is None:
             abort(404)
+        view_row = dict(row)
+        if view_row["source_key"].startswith("quest:"):
+            meta = quest_metadata_for_row(view_row, raw_directory())
+            view_row["title"] = meta.get("display_label") or view_row["title"]
+            view_row["category"] = meta.get("type_label") or view_row["category"]
+            back_default = "/quests"
+        else:
+            back_default = "/"
         return render_template(
             "document.html",
             **common(),
-            row=row,
+            row=view_row,
             body_html=body_html,
-            back_href=request.referrer or "/",
-            pdf_href=url_for("document_pdf", source_key=row["source_key"]),
+            back_href=request.referrer or back_default,
+            pdf_href=url_for("document_pdf", source_key=view_row["source_key"]),
         )
 
     @app.get("/document/<path:source_key>/pdf")
@@ -222,15 +334,20 @@ def create_app(db_path: str | Path | None = None, raw_dir: str | Path | None = N
             store.close()
         if row is None:
             abort(404)
+        view_row = dict(row)
+        if view_row["source_key"].startswith("quest:"):
+            meta = quest_metadata_for_row(view_row, raw_directory())
+            view_row["title"] = meta.get("display_label") or view_row["title"]
+            view_row["category"] = meta.get("type_label") or view_row["category"]
         body = (
-            f'<p class="category">{html.escape(row["category"])}</p><h1>{html.escape(row["title"])}</h1>'
+            f'<p class="category">{html.escape(view_row["category"])}</p><h1>{html.escape(view_row["title"])}</h1>'
             '<div class="ornament">◆</div>'
             + body_html
-            + f'<p class="source">来源：<a href="{html.escape(row["source_url"], quote=True)}">'
-            + html.escape(row["source_url"])
+            + f'<p class="source">来源：<a href="{html.escape(view_row["source_url"], quote=True)}">'
+            + html.escape(view_row["source_url"])
             + "</a></p>"
         )
-        return pdf_response(html_export_page(row["title"], body), f"genshin-{row['title']}.pdf")
+        return pdf_response(html_export_page(view_row["title"], body), f"genshin-{view_row['title']}.pdf")
 
     @app.get("/export.html")
     def export_html() -> Response:

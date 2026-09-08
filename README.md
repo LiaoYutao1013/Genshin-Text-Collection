@@ -23,6 +23,8 @@ conda activate yolo
 - 顶部导航按任务、角色、武器、圣遗物、书籍、名片分类浏览；
 - 每个页面和检索结果都提供 PDF 导出，导出的 PDF 与网页使用同一套排版样式。
 
+任务页 `http://127.0.0.1:8765/quests` 会按魔神任务、传说任务、活动任务、世界任务和国家/地区分组，并显示章节/幕数与任务标题。例如“第五章 第五幕 · 炽烈的还魂诗”可以直接通过标题、章节或幕数检索，不再只显示数字编号。
+
 `./scripts/setup.sh` 会将工程以可编辑模式安装到 `yolo` 环境。因此 `notebooks/` 下的 Notebook 可从任意工作目录直接打开；首格会从已安装包的位置定位工程目录，无需切换 Jupyter 的启动目录。
 
 ## 抓取策略
@@ -61,6 +63,7 @@ conda activate yolo
 ./scripts/export.sh --format html --query "安柏" --output exports/amber.html
 ./scripts/export.sh --format markdown --category "任务/世界任务" --output exports/world-quests.md
 ./scripts/export.sh --format pdf --query "芙宁娜" --category "角色/故事" --output exports/furina.pdf
+./scripts/export.sh --format pdf --query "第五章 第五幕" --category "任务" --output exports/natlan-act5.pdf
 ```
 
 HTML/PDF 导出使用与网页相同的排版样式；`pdf` 格式会调用本机的无头 Chrome 生成文件。导出范围默认为全库，建议用关键词或分类缩小打印内容。角色分类会自动合并为角色档案页，而不是逐条输出原始数据库记录。

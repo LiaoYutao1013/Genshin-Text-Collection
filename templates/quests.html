@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}任务文本 - 原神文本收藏{% endblock %}
+{% block content %}
+<header class="hero">
+  <h1>任务文本</h1>
+  <p class="subtitle">按魔神任务、传说任务、活动任务、世界任务与国家地区组织</p>
+  <div class="ornament">◆</div>
+  <form class="searchbar" action="/quests">
+    <input name="q" value="{{ query }}" placeholder="输入任务标题、章节、幕数或正文关键词" autofocus>
+    <select name="type">
+      <option value="">全部任务类型</option>
+      {% for item in type_counts %}
+      <option value="{{ item.key }}" {% if item.key == quest_type %}selected{% endif %}>{{ item.label }} ({{ item.count }})</option>
+      {% endfor %}
+    </select>
+    <button type="submit">查找任务</button>
+  </form>
+</header>
+
+<div class="tabs no-print">
+  <a href="/quests?q={{ query|urlencode }}" class="{% if not quest_type %}active{% endif %}">全部</a>
+  {% for item in type_counts %}
+  <a href="/quests?q={{ query|urlencode }}&type={{ item.key }}" class="{% if quest_type == item.key %}active{% endif %}">{{ item.label }}</a>
+  {% endfor %}
+</div>
+
+<div class="toolbar no-print">
+  <strong>{{ entries|length }} 条任务</strong>
+  <a class="button ghost" href="/quests.pdf?q={{ query|urlencode }}&type={{ quest_type|urlencode }}" target="_blank">导出当前任务为 PDF</a>
+</div>
+
+{% if groups %}
+  {% for group in groups %}
+  <section class="quest-group">
+    <h2>{{ group.type_label }} · {{ group.region }}<span class="count">{{ group.entries|length }} 条</span></h2>
+    <div class="rule"></div>
+    <section class="result-grid">
+      {% for item in group.entries %}
+      <a class="card" href="{{ url_for('document', source_key=item.source_key) }}">
+        <p class="category">{{ item.type_label }} · {{ item.region }}</p>
+        <h2>{{ item.display_label }}</h2>
+        {% if item.description %}<p class="preview">{{ item.description }}</p>{% endif %}
+      </a>
+      {% endfor %}
+    </section>
+  </section>
+  {% endfor %}
+{% else %}
+  <p class="empty">没有匹配的任务文本。</p>
+{% endif %}
+{% endblock %}

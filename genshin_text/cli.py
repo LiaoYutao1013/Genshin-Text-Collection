@@ -10,7 +10,7 @@ from rich.table import Table
 
 from .collector import AccessStopped, CollectionConfig, DEFAULT_CATEGORIES, crawl
 from .exporter import character_export, html_document, markdown, plain
-from .presentation import DEFAULT_RAW_DIR, chrome_pdf, matching_character_groups
+from .presentation import DEFAULT_RAW_DIR, chrome_pdf, matching_character_groups, matching_quest_entries
 from .store import Store
 
 app = typer.Typer(no_args_is_help=True, help="原神文本收藏：本地采集、检索、导出与浏览。")
@@ -78,7 +78,26 @@ def export_collection(
         raise typer.BadParameter("format 必须为 html、pdf、markdown 或 text")
     store = Store(db)
     try:
-        rows = list(store.iter_documents(query, category))
+        base_rows = list(store.iter_documents(query, category))
+        task_entries = []
+        if category == "任务" or (not category and query):
+            task_entries = matching_quest_entries(store, raw_dir, query)
+
+        if category == "任务":
+            rows = []
+            for entry in task_entries:
+                row = store.get(entry["source_key"])
+                if row is not None:
+                    rows.append(row)
+        else:
+            rows = base_rows
+            if not category and query:
+                existing = {row["source_key"] for row in rows}
+                for entry in task_entries:
+                    if entry["source_key"] not in existing:
+                        row = store.get(entry["source_key"])
+                        if row is not None:
+                            rows.append(row)
         if not rows:
             raise typer.Exit("没有匹配的本地文本，未创建文件。")
         output.parent.mkdir(parents=True, exist_ok=True)

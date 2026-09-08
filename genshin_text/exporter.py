@@ -11,6 +11,7 @@ from .presentation import (
     document_inner_html,
     html_export_page,
     matching_character_groups,
+    quest_metadata_for_row,
 )
 from .store import Store
 
@@ -42,9 +43,16 @@ def html_document(rows, raw_dir: Path = DEFAULT_RAW_DIR) -> str:
     """
     articles = []
     for row in rows:
+        if row["category"] == "任务":
+            meta = quest_metadata_for_row(row, raw_dir)
+            title = meta.get("display_label") or row["title"]
+            category = meta.get("type_label") or row["category"]
+        else:
+            title = row["title"]
+            category = row["category"]
         articles.append(
             '<section class="article-card"><p class="category">'
-            f'{html.escape(row["category"])}</p><h2>{html.escape(row["title"])}</h2>'
+            f'{html.escape(category)}</p><h2>{html.escape(title)}</h2>'
             + document_inner_html(row, raw_dir)
             + f'<p class="source">来源：<a href="{html.escape(row["source_url"], quote=True)}">'
             + html.escape(row["source_url"])
