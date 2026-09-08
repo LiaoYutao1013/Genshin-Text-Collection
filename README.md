@@ -16,6 +16,13 @@ conda activate yolo
 
 浏览器打开 `http://127.0.0.1:8765`。工程使用 `yolo` Conda 环境中的 `httpx`、Rich、Typer、Flask 和 nbformat；依赖版本记录于 `requirements-yolo.txt`。数据写入 `data/genshin.sqlite3`，原始 API 响应缓存于 `data/raw/`，可随时中断后重新执行抓取命令。
 
+页面现在提供：
+
+- 仿米游社观测枢的本地浏览样式，任务文本按剧情回顾方式展示带说话人的对白；
+- 角色页按角色聚合基本信息、角色故事与语音，旅行者不同属性会合并为一个入口；
+- 顶部导航按任务、角色、武器、圣遗物、书籍、名片分类浏览；
+- 每个页面和检索结果都提供 PDF 导出，导出的 PDF 与网页使用同一套排版样式。
+
 `./scripts/setup.sh` 会将工程以可编辑模式安装到 `yolo` 环境。因此 `notebooks/` 下的 Notebook 可从任意工作目录直接打开；首格会从已安装包的位置定位工程目录，无需切换 Jupyter 的启动目录。
 
 ## 抓取策略
@@ -53,9 +60,10 @@ conda activate yolo
 ./scripts/search.sh "璃月 港口"
 ./scripts/export.sh --format html --query "安柏" --output exports/amber.html
 ./scripts/export.sh --format markdown --category "任务/世界任务" --output exports/world-quests.md
+./scripts/export.sh --format pdf --query "芙宁娜" --category "角色/故事" --output exports/furina.pdf
 ```
 
-HTML 导出带打印样式；在浏览器中打开后使用打印功能即可。导出范围默认为全库，建议用关键词或分类缩小打印内容。
+HTML/PDF 导出使用与网页相同的排版样式；`pdf` 格式会调用本机的无头 Chrome 生成文件。导出范围默认为全库，建议用关键词或分类缩小打印内容。角色分类会自动合并为角色档案页，而不是逐条输出原始数据库记录。
 
 ## 目录
 
