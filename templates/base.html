@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{% block title %}原神文本收藏{% endblock %}</title>
+<style>{{ base_css|safe }}</style>
+<body>
+<nav class="topnav no-print">
+  <span class="brand">原神文本收藏</span>
+  {% for item in nav_items %}
+  <a href="{{ item.href }}" {% if item.key == active_nav %}class="active"{% endif %}>{{ item.label }}</a>
+  {% endfor %}
+</nav>
+<main class="shell">
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>

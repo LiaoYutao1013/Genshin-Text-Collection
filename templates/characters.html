@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}角色文本 - 原神文本收藏{% endblock %}
+{% block content %}
+<header class="hero">
+  <h1>角色文本</h1>
+  <p class="subtitle">按角色聚合基本信息、角色故事与语音</p>
+  <div class="ornament">◆</div>
+  <form class="searchbar" action="/characters">
+    <input name="q" value="{{ query }}" placeholder="输入角色名，例如：芙宁娜" autofocus>
+    <button type="submit">查找角色</button>
+  </form>
+</header>
+<div class="toolbar no-print">
+  <strong>{{ groups|length }} 位角色</strong>
+  <a class="button ghost" href="/characters.pdf{% if query %}?q={{ query|urlencode }}{% endif %}" target="_blank">导出当前角色列表为 PDF</a>
+</div>
+{% if groups %}
+<section class="result-grid">
+  {% for item in groups %}
+  <a class="card" href="{{ url_for('character', key=item.key) }}">
+    <p class="category">角色</p>
+    <h2>{{ item.title }}</h2>
+    {% if item.element %}<p class="preview">元素：{{ item.element }}</p>{% endif %}
+    {% if item.variant_count > 1 %}<p class="preview">{{ item.variant_count }} 个旅行者属性档案</p>{% endif %}
+  </a>
+  {% endfor %}
+</section>
+{% else %}
+<p class="empty">没有匹配的角色。</p>
+{% endif %}
+{% endblock %}

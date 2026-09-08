@@ -1,11 +1,59 @@
-<!doctype html>
-<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>原神文本收藏</title>
-<style>
-*{box-sizing:border-box}body{margin:0;background:#f8fafc;color:#172033;font:16px/1.55 system-ui,"Noto Sans CJK SC",sans-serif}.shell{max-width:1080px;margin:auto;padding:32px 22px}header{border-bottom:1px solid #cbd5e1;margin-bottom:24px}h1{font:700 28px/1.2 Georgia,"Noto Serif CJK SC",serif;letter-spacing:0;margin:0 0 7px}header p{color:#475569;margin:0 0 20px}form{display:grid;grid-template-columns:minmax(0,1fr) 190px auto;gap:10px;margin:20px 0}input,select,button{font:inherit;border:1px solid #94a3b8;border-radius:4px;padding:9px 11px;background:#fff}button,a.button{background:#0f766e;color:#fff;border-color:#0f766e;text-decoration:none;cursor:pointer}.actions{display:flex;gap:9px;align-items:center;margin-bottom:18px}.actions a{color:#0f766e}.results{display:grid;gap:10px}.result{display:block;background:#fff;border:1px solid #cbd5e1;border-radius:5px;padding:15px;color:inherit;text-decoration:none}.result:hover{border-color:#0f766e}.category{font-size:13px;color:#64748b;margin:0}.result h2{font-size:18px;margin:3px 0}.preview{color:#334155;margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.empty{color:#64748b}@media(max-width:620px){form{grid-template-columns:1fr}.shell{padding:24px 15px}}
-</style>
-<body><main class="shell"><header><h1>原神文本收藏</h1><p>本地简体中文全文检索与打印导出</p></header>
-<form action="/"><input name="q" value="{{ query }}" placeholder="输入任务、角色、对白或任意文本" autofocus><select name="category"><option value="">全部分类</option>{% for item in categories %}<option value="{{ item.category }}" {% if item.category == category %}selected{% endif %}>{{ item.category }} ({{ item.count }})</option>{% endfor %}</select><button type="submit">检索</button></form>
-{% if query or category %}<div class="actions"><strong>{{ rows|length }} 条结果</strong><a class="button" href="/export.html?q={{ query|urlencode }}&category={{ category|urlencode }}" target="_blank">打印 / 导出当前结果</a></div>{% endif %}
-{% if rows %}<section class="results">{% for row in rows %}<a class="result" href="{{ url_for('document', source_key=row.source_key) }}"><p class="category">{{ row.category }}</p><h2>{{ row.title }}</h2><p class="preview">{{ row.content|replace('\n', ' ') }}</p></a>{% endfor %}</section>{% elif query or category %}<p class="empty">没有匹配的本地文本。</p>{% else %}<p class="empty">完成采集后，可在此搜索任务、角色故事、武器、圣遗物和图鉴文本。</p>{% endif %}
-</main></body></html>
+{% extends "base.html" %}
+{% block title %}{{ query or "原神文本收藏" }} - 原神文本收藏{% endblock %}
+{% block content %}
+<header class="hero">
+  <h1>原神文本收藏</h1>
+  <p class="subtitle">本地简体中文全文检索、剧情回顾与打印导出</p>
+  <div class="ornament">◆</div>
+  <form class="searchbar" action="/">
+    <input name="q" value="{{ query }}" placeholder="输入任务、角色、对白或任意文本" autofocus>
+    <select name="category">
+      <option value="">全部分类</option>
+      {% for item in categories %}
+      <option value="{{ item.category }}" {% if item.category == category %}selected{% endif %}>{{ item.category }} ({{ item.count }})</option>
+      {% endfor %}
+    </select>
+    <button type="submit">检索</button>
+  </form>
+</header>
+
+{% if character_groups %}
+  <div class="toolbar no-print">
+    <strong>{{ character_groups|length }} 位角色</strong>
+    <a class="button ghost" href="{{ character_pdf_href }}" target="_blank">导出当前结果为 PDF</a>
+  </div>
+  <section class="result-grid">
+    {% for item in character_groups %}
+    <a class="card" href="{{ url_for('character', key=item.key) }}">
+      <p class="category">角色</p>
+      <h2>{{ item.title }}</h2>
+      {% if item.element %}<p class="preview">元素：{{ item.element }}</p>{% endif %}
+      {% if item.variant_count > 1 %}<p class="preview">{{ item.variant_count }} 个旅行者属性档案</p>{% endif %}
+    </a>
+    {% endfor %}
+  </section>
+{% endif %}
+
+{% if rows %}
+  <div class="toolbar no-print">
+    <strong>{{ rows|length }} 条其他文本结果</strong>
+    <a class="button ghost" href="/export.pdf?q={{ query|urlencode }}&category={{ category|urlencode }}" target="_blank">导出当前结果为 PDF</a>
+    <a class="button ghost" href="/export.html?q={{ query|urlencode }}&category={{ category|urlencode }}" target="_blank">打开打印版 HTML</a>
+  </div>
+  <section class="result-grid">
+    {% for row in rows %}
+    <a class="card" href="{{ url_for('document', source_key=row.source_key) }}">
+      <p class="category">{{ row.category }}</p>
+      <h2>{{ row.title }}</h2>
+      <p class="preview">{{ row.preview }}</p>
+    </a>
+    {% endfor %}
+  </section>
+{% elif not character_groups and (query or category) %}
+  <p class="empty">没有匹配的本地文本。</p>
+{% endif %}
+
+{% if not character_groups and not rows and not query and not category %}
+  <p class="empty">完成采集后，可在此搜索任务、角色故事、武器、圣遗物和图鉴文本。也可以从顶部导航直接浏览分类。</p>
+{% endif %}
+{% endblock %}

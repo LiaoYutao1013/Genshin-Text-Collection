@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}{{ profile.basic.name }} - 角色文本 - 原神文本收藏{% endblock %}
+{% block content %}
+<div class="toolbar no-print">
+  <a class="button ghost" href="/characters">返回角色列表</a>
+  <a class="button ghost" href="{{ pdf_href }}" target="_blank">导出 PDF</a>
+</div>
+<article class="article-card">
+  <p class="category">角色资料</p>
+  <h1>{{ profile.basic.name }}</h1>
+  <div class="ornament">◆</div>
+  <div class="content">{{ body_html|safe }}</div>
+  <p class="source">数据来源：<a href="{{ profile.source_url }}">{{ profile.source_url }}</a></p>
+</article>
+{% endblock %}
