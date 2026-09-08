@@ -26,6 +26,7 @@ NAV_ITEMS = (
     {"label": "首页", "href": "/", "key": "home"},
     {"label": "角色", "href": "/characters", "key": "characters"},
     {"label": "任务", "href": "/quests", "key": "quest"},
+    {"label": "素材", "href": "/materials", "key": "materials"},
     {"label": "武器", "href": "/?category=%E6%AD%A6%E5%99%A8%2F%E6%95%85%E4%BA%8B", "key": "weapon"},
     {"label": "圣遗物", "href": "/?category=%E5%9C%A3%E9%81%97%E7%89%A9", "key": "reliquary"},
     {"label": "书籍", "href": "/?category=%E5%9B%BE%E9%89%B4%2F%E4%B9%A6%E7%B1%8D", "key": "book"},
@@ -90,6 +91,14 @@ QUERY_ALIASES = {
     "炽热": "炽烈",
     "炽热的还魂诗": "炽烈的还魂诗",
 }
+RELIQUARY_SLOT_ORDER = (
+    ("EQUIP_BRACER", "生之花"),
+    ("EQUIP_NECKLACE", "死之羽"),
+    ("EQUIP_SHOES", "时之沙"),
+    ("EQUIP_RING", "空之杯"),
+    ("EQUIP_DRESS", "理之冠"),
+)
+MATERIAL_GROUP_ORDER = {"weekly": 0, "talent": 1, "weapon": 2, "normal-boss": 3, "other": 4}
 
 
 BASE_CSS = r"""
@@ -418,8 +427,7 @@ def load_quest_catalog(raw_dir: Path) -> tuple[dict[str, dict[str, Any]], ...]:
         first_story_title = ""
         first_story_description = ""
         if isinstance(story_list, dict):
-            for key in sorted(story_list, key=_int_key):
-                story = story_list.get(key)
+            for key, story in story_list.items():
                 if not isinstance(story, dict):
                     continue
                 story_info = story.get("info") or {}
@@ -594,6 +602,120 @@ def _linked_payload(category: str, item_id: str, raw_dir: Path) -> dict[str, Any
         if isinstance(section, dict) and isinstance(section.get("data"), dict):
             return section["data"]
     return None
+
+
+def _linked_sections(category: str, item_id: str, raw_dir: Path) -> list[dict[str, Any]]:
+    payload = load_json(raw_dir / "_linked" / category / f"{item_id}.json")
+    if not isinstance(payload, dict):
+        return []
+    return [section for section in payload.get("sections") or [] if isinstance(section, dict)]
+
+
+def _material_series_name(name: str, type_label: str) -> str:
+    if type_label == "角色天赋素材":
+        return name.split("的", 1)[0] if "的" in name else name
+    if type_label == "武器突破素材":
+        return name.rsplit("的", 1)[0] if "的" in name else name
+    return name
+
+
+def _material_group_key(entry: dict[str, Any]) -> tuple[str, str, str]:
+    type_label = entry["type_label"]
+    rank = entry.get("rank")
+    dropped_by = entry.get("dropped_by")
+    if type_label == "角色培养素材" and rank == 5:
+        return ("weekly", f"周本素材 · {dropped_by or '未命名首领'}", dropped_by or "")
+    if type_label == "武器突破素材":
+        return ("weapon", f"武器突破素材 · {entry['series']}", entry["series"])
+    if type_label == "角色天赋素材":
+        return ("talent", f"角色天赋素材 · {entry['series']}", entry["series"])
+    if type_label in {"角色培养素材", "角色突破素材"} and dropped_by:
+        return ("normal-boss", f"{type_label} · {dropped_by}", dropped_by)
+    return ("other", type_label, "")
+
+
+@lru_cache(maxsize=8)
+def load_material_catalog(raw_dir: Path) -> tuple[dict[str, Any], ...]:
+    directory = Path(raw_dir) / "material"
+    if not directory.is_dir():
+        return tuple()
+
+    entries: dict[int, dict[str, Any]] = {}
+    for path in sorted(directory.glob("*.json"), key=lambda p: _int_key(p.stem)):
+        payload = load_json(path)
+        item = _unwrap(payload) if payload is not None else None
+        if not isinstance(item, dict):
+            continue
+        item_id = item.get("id") or path.stem
+        name = _clean_text(item.get("name"))
+        type_label = _clean_text(item.get("type")) or "未分类素材"
+        rank = item.get("rank")
+        description = _clean_text(item.get("description") or item.get("descriptionCodex"))
+        additions = item.get("additions") or {}
+        dropped_by = ""
+        if isinstance(additions, dict):
+            dropped = additions.get("droppedBy") or []
+            if isinstance(dropped, list) and dropped and isinstance(dropped[0], dict):
+                dropped_by = _clean_text(dropped[0].get("name"))
+        required_by: list[str] = []
+        if isinstance(additions, dict):
+            required = additions.get("requiredBy") or {}
+            if isinstance(required, dict):
+                for kind in ("avatar", "weapon"):
+                    for target in _as_list(required.get(kind)):
+                        if isinstance(target, dict):
+                            target_name = _clean_text(target.get("name"))
+                            if target_name:
+                                required_by.append(target_name)
+
+        source_names = []
+        for source in _as_list(item.get("source")):
+            if isinstance(source, dict):
+                source_name = _clean_text(source.get("name"))
+                if source_name:
+                    source_names.append(source_name)
+
+        series = _material_series_name(name, type_label)
+        group_kind, group_title, group_subtitle = _material_group_key({
+            "type_label": type_label,
+            "rank": rank,
+            "dropped_by": dropped_by,
+            "series": series,
+        })
+        entries[int(item_id)] = {
+            "source_key": f"material:{item_id}",
+            "id": str(item_id),
+            "name": name,
+            "type_label": type_label,
+            "rank": rank,
+            "description": description,
+            "series": series,
+            "dropped_by": dropped_by,
+            "source_names": source_names,
+            "required_by": list(dict.fromkeys(required_by)),
+            "group_kind": group_kind,
+            "group_title": group_title,
+            "group_subtitle": group_subtitle,
+        }
+    return tuple(sorted(
+        entries.values(),
+        key=lambda e: (MATERIAL_GROUP_ORDER.get(e["group_kind"], 5), e["group_title"], e["name"]),
+    ))
+
+
+def material_groups(catalog: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    groups: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
+    for entry in catalog:
+        key = entry["group_title"]
+        if key not in groups:
+            groups[key] = {
+                "key": key,
+                "title": key,
+                "kind": entry["group_kind"],
+                "entries": [],
+            }
+        groups[key]["entries"].append(entry)
+    return list(groups.values())
 
 
 def _paragraphs(text: str) -> list[str]:
@@ -848,7 +970,7 @@ def quest_sections(row: Any, raw_dir: Path = DEFAULT_RAW_DIR) -> list[dict[str, 
 
     story_list = payload.get("storyList") or {}
     if isinstance(story_list, dict):
-        story_items = sorted(story_list.items(), key=lambda kv: _int_key(kv[0]))
+        story_items = list(story_list.items())
     else:
         story_items = [(str(i), item) for i, item in enumerate(_as_list(story_list))]
 
@@ -861,7 +983,7 @@ def quest_sections(row: Any, raw_dir: Path = DEFAULT_RAW_DIR) -> list[dict[str, 
         steps: list[dict[str, Any]] = []
         step_data = story.get("story") or {}
         if isinstance(step_data, dict):
-            step_items = sorted(step_data.items(), key=lambda kv: _int_key(kv[0]))
+            step_items = list(step_data.items())
         else:
             step_items = [(str(i), step) for i, step in enumerate(_as_list(step_data))]
 
@@ -875,7 +997,7 @@ def quest_sections(row: Any, raw_dir: Path = DEFAULT_RAW_DIR) -> list[dict[str, 
                     continue
                 items = task.get("items") or {}
                 if isinstance(items, dict):
-                    ordered = sorted(items.items(), key=lambda kv: _int_key(kv[0]))
+                    ordered = list(items.items())
                 else:
                     ordered = [(str(i), item) for i, item in enumerate(_as_list(items))]
                 for _, item in ordered:
@@ -951,6 +1073,157 @@ def generic_content_html(content: str) -> str:
     return "\n".join(parts)
 
 
+def _story_section_by_name(sections: list[dict[str, Any]], piece_name: str) -> dict[str, Any] | None:
+    if not piece_name:
+        return None
+    for section in sections:
+        heading = _clean_text(section.get("heading"))
+        if piece_name in heading or heading.endswith(piece_name):
+            return section
+    return None
+
+
+def weapon_inner_html(row: Any, raw_dir: Path = DEFAULT_RAW_DIR) -> str:
+    source_key = row["source_key"]
+    item_id = source_key.split(":", 1)[1]
+    item = raw_payload(row, raw_dir)
+    parts: list[str] = []
+
+    if isinstance(item, dict):
+        description = _clean_text(item.get("description"))
+        if description:
+            parts.append(f'<p class="detail">{html.escape(description).replace(chr(10), "<br>")}</p>')
+
+        affix = item.get("affix") or {}
+        if isinstance(affix, dict):
+            for _, affix_item in affix.items():
+                if not isinstance(affix_item, dict):
+                    continue
+                affix_name = _clean_text(affix_item.get("name"))
+                upgrades = affix_item.get("upgrade") or {}
+                if affix_name:
+                    parts.append(f'<h3 class="section-title">武器技能 · {html.escape(affix_name)}</h3>')
+                if isinstance(upgrades, dict):
+                    for level_key in sorted(upgrades, key=_int_key):
+                        level = _int_key(level_key) + 1
+                        text = _clean_text(upgrades[level_key])
+                        if text:
+                            parts.append(f'<section class="quote-item"><h4 class="role">精炼 {level}</h4><p>{html.escape(text).replace(chr(10), "<br>")}</p></section>')
+
+    linked_sections = _linked_sections("weapon", item_id, raw_dir)
+    if linked_sections:
+        parts.append('<h3 class="section-title">武器故事</h3>')
+        for section in linked_sections:
+            story = section.get("data")
+            if isinstance(story, str):
+                story = _clean_text(story)
+            else:
+                story = _clean_text(json.dumps(story, ensure_ascii=False)) if story else ""
+            if story:
+                paragraphs = [p for p in story.split("\n\n") if p.strip()]
+                if paragraphs:
+                    parts.append('<section class="quote-item">')
+                    for paragraph in paragraphs:
+                        parts.append(f'<p>{html.escape(paragraph).replace(chr(10), "<br>")}</p>')
+                    parts.append("</section>")
+    return "\n".join(parts) if parts else generic_content_html(row["content"])
+
+
+def reliquary_inner_html(row: Any, raw_dir: Path = DEFAULT_RAW_DIR) -> str:
+    source_key = row["source_key"]
+    item_id = source_key.split(":", 1)[1]
+    item = raw_payload(row, raw_dir)
+    parts: list[str] = []
+
+    if isinstance(item, dict):
+        affix_list = item.get("affixList") or {}
+        if isinstance(affix_list, dict) and affix_list:
+            parts.append('<h3 class="section-title">套装效果</h3>')
+            for affix_key in affix_list:
+                affix_text = _clean_text(affix_list[affix_key])
+                if affix_text:
+                    parts.append(f'<section class="quote-item"><p>{html.escape(affix_text).replace(chr(10), "<br>")}</p></section>')
+
+        suit = item.get("suit") or {}
+        linked_sections = _linked_sections("reliquary", item_id, raw_dir)
+        if isinstance(suit, dict):
+            parts.append('<h3 class="section-title">部件与故事</h3>')
+            for slot_key, slot_label in RELIQUARY_SLOT_ORDER:
+                piece = suit.get(slot_key)
+                if not isinstance(piece, dict):
+                    continue
+                piece_name = _clean_text(piece.get("name"))
+                description = _clean_text(piece.get("description"))
+                story_section = _story_section_by_name(linked_sections, piece_name)
+                story = story_section.get("data") if story_section else ""
+                if isinstance(story, str):
+                    story = _clean_text(story)
+                else:
+                    story = _clean_text(json.dumps(story, ensure_ascii=False)) if story else ""
+                if not piece_name and not story:
+                    continue
+                parts.append('<section class="quote-item">')
+                heading = f"{slot_label} · {piece_name}" if piece_name else slot_label
+                parts.append(f'<h4 class="role">{html.escape(heading)}</h4>')
+                if description:
+                    parts.append(f'<p class="muted">{html.escape(description)}</p>')
+                if story:
+                    for paragraph in story.split("\n\n"):
+                        if paragraph.strip():
+                            parts.append(f'<p>{html.escape(paragraph.strip()).replace(chr(10), "<br>")}</p>')
+                parts.append("</section>")
+    return "\n".join(parts) if parts else generic_content_html(row["content"])
+
+
+def material_inner_html(row: Any, raw_dir: Path = DEFAULT_RAW_DIR) -> str:
+    source_key = row["source_key"]
+    item_id = source_key.split(":", 1)[1]
+    item = raw_payload(row, raw_dir)
+    if not isinstance(item, dict):
+        return generic_content_html(row["content"])
+
+    parts: list[str] = []
+    description = _clean_text(item.get("description") or item.get("descriptionCodex"))
+    if description:
+        parts.append(f'<p class="detail">{html.escape(description).replace(chr(10), "<br>")}</p>')
+
+    info_fields = [
+        ("类型", _clean_text(item.get("type"))),
+        ("稀有度", f"{item.get('rank')}★" if item.get("rank") else ""),
+    ]
+    source_names = []
+    for source in _as_list(item.get("source")):
+        if isinstance(source, dict):
+            source_name = _clean_text(source.get("name"))
+            if source_name:
+                source_names.append(source_name)
+    if source_names:
+        info_fields.append(("获取途径", "、".join(source_names)))
+    fields = [(label, value) for label, value in info_fields if value]
+    if fields:
+        parts.append('<div class="info-grid">')
+        for label, value in fields:
+            parts.append(f'<div><span class="label">{html.escape(label)}</span>{html.escape(value)}</div>')
+        parts.append("</div>")
+
+    additions = item.get("additions") or {}
+    if isinstance(additions, dict):
+        required = additions.get("requiredBy") or {}
+        if isinstance(required, dict):
+            for kind, label in (("avatar", "关联角色"), ("weapon", "关联武器")):
+                targets = _as_list(required.get(kind))
+                names = []
+                for target in targets:
+                    if isinstance(target, dict):
+                        name = _clean_text(target.get("name"))
+                        if name:
+                            names.append(name)
+                if names:
+                    parts.append(f'<h3 class="section-title">{html.escape(label)}</h3>')
+                    parts.append(f'<p class="muted">{html.escape("、".join(names))}</p>')
+    return "\n".join(parts)
+
+
 def document_inner_html(row: Any, raw_dir: Path = DEFAULT_RAW_DIR) -> str:
     source_key = row["source_key"]
     category = row["category"]
@@ -971,6 +1244,12 @@ def document_inner_html(row: Any, raw_dir: Path = DEFAULT_RAW_DIR) -> str:
                         parts.append(f'<div class="{cls}">{role_html}<p class="text">{html.escape(dialogue["text"]).replace(chr(10), "<br>")}</p></div>')
                     parts.append("</div>")
             return "\n".join(parts)
+    if source_key.startswith("weapon:"):
+        return weapon_inner_html(row, raw_dir)
+    if source_key.startswith("reliquary:"):
+        return reliquary_inner_html(row, raw_dir)
+    if source_key.startswith("material:"):
+        return material_inner_html(row, raw_dir)
     return generic_content_html(row["content"])
 
 

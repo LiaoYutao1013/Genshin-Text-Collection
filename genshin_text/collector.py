@@ -20,7 +20,7 @@ from .store import Store
 BASE_URL = "https://gi.yatta.moe"
 API_ROOT = f"{BASE_URL}/api/v2/chs"
 API_ROOT_CHS = f"{BASE_URL}/api/v2/CHS"
-DEFAULT_CATEGORIES = ("quest", "avatar", "weapon", "reliquary", "book", "achievement", "namecard", "archive")
+DEFAULT_CATEGORIES = ("quest", "avatar", "weapon", "reliquary", "book", "achievement", "namecard", "archive", "material")
 USER_AGENT = "GenshinTextCollection/2.0 (personal offline research; respectful crawler)"
 TEXT_KEYS = {
     "name", "title", "description", "story", "content", "text", "detail", "introduction",
@@ -177,6 +177,12 @@ def classify(category: str, payload: Any) -> str:
         "book": "图鉴/书籍", "achievement": "图鉴/成就", "namecard": "图鉴/名片", "archive": "图鉴",
     }
     item = unwrap(payload)
+    if category == "material":
+        if isinstance(item, dict):
+            material_type = clean_text(item.get("type"))
+            if material_type:
+                return f"素材/{material_type}"
+        return "素材"
     if category != "quest" or not isinstance(item, dict):
         return labels.get(category, category)
     for key in ("chapter", "questType", "type", "category"):

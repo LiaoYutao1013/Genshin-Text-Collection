@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}{{ group.title }} - 素材文本 - 原神文本收藏{% endblock %}
+{% block content %}
+<div class="toolbar no-print">
+  <a class="button ghost" href="/materials">返回素材列表</a>
+  <a class="button ghost" href="{{ pdf_href }}" target="_blank">导出 PDF</a>
+</div>
+<article class="article-card">
+  <p class="category">素材系列</p>
+  <h1>{{ group.title }}</h1>
+  <div class="ornament">◆</div>
+  {% for item in group.entries %}
+  <section class="quote-item">
+    <h4 class="role">{{ item.name }} · {{ item.rank }}★</h4>
+    {% if item.description %}<p>{{ item.description|replace('\n', '<br>')|safe }}</p>{% endif %}
+    {% if item.source_names %}<p class="muted">获取：{{ item.source_names|join('、') }}</p>{% endif %}
+    {% if item.required_by %}<p class="muted">关联：{{ item.required_by|join('、') }}</p>{% endif %}
+  </section>
+  {% endfor %}
+</article>
+{% endblock %}

@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}素材文本 - 原神文本收藏{% endblock %}
+{% block content %}
+<header class="hero">
+  <h1>素材文本</h1>
+  <p class="subtitle">突破材料、角色培养素材、天赋书与周本素材</p>
+  <div class="ornament">◆</div>
+  <form class="searchbar" action="/materials">
+    <input name="q" value="{{ query }}" placeholder="输入素材名、系列名或首领名" autofocus>
+    <button type="submit">查找素材</button>
+  </form>
+</header>
+<div class="toolbar no-print">
+  <strong>{{ groups|length }} 个系列</strong>
+  <a class="button ghost" href="/materials.pdf{% if query %}?q={{ query|urlencode }}{% endif %}" target="_blank">导出当前素材为 PDF</a>
+</div>
+{% if groups %}
+  {% for group in groups %}
+  <section class="quest-group">
+    <h2>{{ group.title }}<span class="count">{{ group.entries|length }} 项</span></h2>
+    <div class="rule"></div>
+    <section class="result-grid">
+      {% for item in group.entries %}
+      <a class="card" href="{{ url_for('material_group', group_key=group.key) }}">
+        <p class="category">{{ item.type_label }} · {{ item.rank }}★</p>
+        <h2>{{ item.name }}</h2>
+        {% if item.description %}<p class="preview">{{ item.description }}</p>{% endif %}
+      </a>
+      {% endfor %}
+    </section>
+  </section>
+  {% endfor %}
+{% else %}
+  <p class="empty">还没有已采集的素材文本。运行 <code>./scripts/crawl.sh --categories material</code> 后刷新。</p>
+{% endif %}
+{% endblock %}

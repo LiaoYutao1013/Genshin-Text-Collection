@@ -5,6 +5,7 @@ from __future__ import annotations
 import html
 import io
 import os
+import re
 from collections import OrderedDict
 from pathlib import Path
 
@@ -24,8 +25,10 @@ from .presentation import (
     html_export_page,
     html_to_pdf_bytes,
     load_quest_catalog,
+    load_material_catalog,
     matching_character_groups,
     matching_quest_entries,
+    material_groups,
     quest_metadata_for_row,
 )
 from .store import Store
@@ -150,6 +153,32 @@ def create_app(db_path: str | Path | None = None, raw_dir: str | Path | None = N
             "entries": entries,
             "groups": quest_groups(entries),
             "type_counts": type_counts,
+        }
+
+    def material_view_context(query: str) -> dict:
+        catalog = load_material_catalog(raw_directory())
+        if query:
+            variants = [query]
+            for source, target in {"炽热": "炽烈"}.items():
+                if source in query:
+                    variants.append(query.replace(source, target))
+            compact_variants = [re.sub(r"\s+", "", value) for value in variants]
+            filtered = []
+            for entry in catalog:
+                haystack = " ".join([
+                    entry["name"],
+                    entry["type_label"],
+                    entry["series"],
+                    entry["dropped_by"],
+                    entry["description"],
+                ])
+                compact_haystack = re.sub(r"\s+", "", haystack)
+                if any(value in haystack or compact in compact_haystack for value, compact in zip(variants, compact_variants)):
+                    filtered.append(entry)
+            catalog = tuple(filtered)
+        return {
+            "catalog": catalog,
+            "groups": material_groups(catalog),
         }
 
     @app.get("/")
@@ -296,6 +325,56 @@ def create_app(db_path: str | Path | None = None, raw_dir: str | Path | None = N
             **context,
         )
         return pdf_response(html_text, "genshin-quests.pdf")
+
+    @app.get("/materials")
+    def materials() -> str:
+        query = request.args.get("q", "").strip()
+        context = material_view_context(query)
+        return render_template(
+            "materials.html",
+            **common(active_nav="materials"),
+            query=query,
+            **context,
+        )
+
+    @app.get("/materials.pdf")
+    def materials_pdf() -> Response:
+        query = request.args.get("q", "").strip()
+        context = material_view_context(query)
+        html_text = render_template(
+            "materials.html",
+            **common(active_nav="materials"),
+            query=query,
+            **context,
+        )
+        return pdf_response(html_text, "genshin-materials.pdf")
+
+    @app.get("/materials/<path:group_key>")
+    def material_group(group_key: str) -> str:
+        groups = material_groups(load_material_catalog(raw_directory()))
+        group = next((item for item in groups if item["key"] == group_key), None)
+        if group is None:
+            abort(404)
+        return render_template(
+            "material_group.html",
+            **common(active_nav="materials"),
+            group=group,
+            pdf_href=url_for("material_group_pdf", group_key=group_key),
+        )
+
+    @app.get("/materials/<path:group_key>/pdf")
+    def material_group_pdf(group_key: str) -> Response:
+        groups = material_groups(load_material_catalog(raw_directory()))
+        group = next((item for item in groups if item["key"] == group_key), None)
+        if group is None:
+            abort(404)
+        html_text = render_template(
+            "material_group.html",
+            **common(active_nav="materials"),
+            group=group,
+            pdf_href="/materials",
+        )
+        return pdf_response(html_text, f"genshin-material-{group['key']}.pdf")
 
     @app.get("/document/<path:source_key>")
     def document(source_key: str) -> str:
