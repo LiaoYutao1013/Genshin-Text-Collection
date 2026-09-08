@@ -1,0 +1,814 @@
+"""HTML/PDF presentation helpers shared by the local web UI and CLI exporter.
+
+The database rows are intentionally kept as raw text so the crawler stays
+simple.  This module turns those rows (and, where available, the cached API
+payloads) into structured, print-friendly HTML in a style inspired by the
+MiYouShe observatory / in-game story review.
+"""
+
+from __future__ import annotations
+
+import html
+import json
+import re
+import subprocess
+import tempfile
+from collections import OrderedDict
+from pathlib import Path
+from typing import Any, Iterable
+
+ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_RAW_DIR = ROOT / "data" / "raw"
+
+
+NAV_ITEMS = (
+    {"label": "首页", "href": "/", "key": "home"},
+    {"label": "角色", "href": "/characters", "key": "characters"},
+    {"label": "任务", "href": "/?category=%E4%BB%BB%E5%8A%A1", "key": "quest"},
+    {"label": "武器", "href": "/?category=%E6%AD%A6%E5%99%A8%2F%E6%95%85%E4%BA%8B", "key": "weapon"},
+    {"label": "圣遗物", "href": "/?category=%E5%9C%A3%E9%81%97%E7%89%A9", "key": "reliquary"},
+    {"label": "书籍", "href": "/?category=%E5%9B%BE%E9%89%B4%2F%E4%B9%A6%E7%B1%8D", "key": "book"},
+    {"label": "名片", "href": "/?category=%E5%9B%BE%E9%89%B4%2F%E5%90%8D%E7%89%87", "key": "namecard"},
+)
+
+
+ELEMENT_LABELS = {
+    "Water": "水",
+    "Fire": "火",
+    "Electric": "雷",
+    "Ice": "冰",
+    "Wind": "风",
+    "Rock": "岩",
+    "Grass": "草",
+    "None": "无",
+}
+WEAPON_LABELS = {
+    "WEAPON_SWORD_ONE_HAND": "单手剑",
+    "WEAPON_CLAYMORE": "双手剑",
+    "WEAPON_POLE": "长柄武器",
+    "WEAPON_CATALYST": "法器",
+    "WEAPON_BOW": "弓",
+}
+REGION_LABELS = {
+    "MONDSTADT": "蒙德",
+    "LIYUE": "璃月",
+    "INAZUMA": "稻妻",
+    "SUMERU": "须弥",
+    "FONTAINE": "枫丹",
+    "NATLAN": "纳塔",
+    "SNEZHNAYA": "至冬",
+    "KHAENRIAH": "坎瑞亚",
+    "MAINACTOR": "旅行者",
+}
+
+
+BASE_CSS = r"""
+:root{
+  --paper:#f7f3ea;
+  --paper-deep:#efe7d8;
+  --card:#fffdf8;
+  --ink:#38342e;
+  --muted:#7b7267;
+  --line:#ddd2bf;
+  --gold:#a8874b;
+  --gold-soft:#c9ac72;
+  --nav:#272831;
+  --nav-ink:#f3ead6;
+  --water:#3e6f86;
+  --accent:#8b5e3c;
+}
+*{box-sizing:border-box}
+html{background:var(--paper)}
+body{
+  margin:0;
+  color:var(--ink);
+  background:
+    radial-gradient(circle at 15% 0%,rgba(201,172,114,.12),transparent 32rem),
+    radial-gradient(circle at 90% 4%,rgba(62,111,134,.08),transparent 28rem),
+    var(--paper);
+  font:16px/1.85 "Latin Modern Roman","Noto Serif CJK SC","Source Han Serif SC","Songti SC",serif;
+  letter-spacing:.01em;
+}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+.topnav{
+  position:sticky;top:0;z-index:20;
+  display:flex;align-items:center;gap:4px;overflow-x:auto;
+  padding:0 18px;background:linear-gradient(90deg,#20222b,#2b2832);
+  border-bottom:1px solid rgba(201,172,114,.35);
+  box-shadow:0 4px 18px rgba(40,32,24,.14);
+}
+.topnav .brand{
+  color:var(--nav-ink);font-weight:700;font-size:15px;white-space:nowrap;
+  padding:13px 12px 13px 0;letter-spacing:.08em;
+}
+.topnav a{
+  color:#d8ceb8;white-space:nowrap;padding:12px 11px;font-size:14px;
+  border-bottom:2px solid transparent;
+}
+.topnav a:hover{color:#fff;text-decoration:none;background:rgba(255,255,255,.04)}
+.topnav a.active{color:#fff;border-bottom-color:var(--gold-soft)}
+.shell{max-width:1180px;margin:0 auto;padding:30px 20px 70px}
+.hero{
+  position:relative;padding:34px 26px 27px;margin:18px 0 24px;
+  background:linear-gradient(180deg,rgba(255,253,248,.98),rgba(255,253,248,.88));
+  border:1px solid var(--line);border-radius:4px;
+  box-shadow:0 10px 30px rgba(61,47,29,.08);
+}
+.hero:before,.hero:after,.card:before,.card:after{
+  content:"";position:absolute;width:18px;height:18px;pointer-events:none;
+  border-color:var(--gold);opacity:.75;
+}
+.hero:before,.card:before{left:7px;top:7px;border-left:1px solid;border-top:1px solid}
+.hero:after,.card:after{right:7px;bottom:7px;border-right:1px solid;border-bottom:1px solid}
+h1,h2,h3,h4{font-family:"Noto Serif CJK SC","Source Han Serif SC","Songti SC",serif;color:#2f2b26}
+h1{
+  margin:0 0 8px;font-size:clamp(28px,5vw,42px);font-weight:700;line-height:1.2;
+  letter-spacing:.05em;text-align:center;
+}
+.subtitle{margin:0;text-align:center;color:var(--muted);font-size:14px}
+.ornament{
+  display:flex;align-items:center;justify-content:center;gap:9px;margin:12px auto 0;
+  color:var(--gold);font-size:18px;
+}
+.ornament:before,.ornament:after{content:"";height:1px;width:58px;background:linear-gradient(90deg,transparent,var(--gold))}
+.ornament:after{background:linear-gradient(90deg,var(--gold),transparent)}
+.searchbar{display:grid;grid-template-columns:minmax(0,1fr) 190px auto;gap:10px;margin-top:18px}
+input,select,button{font:inherit;border:1px solid #c8bcab;border-radius:3px;padding:10px 12px;background:#fff;color:var(--ink)}
+input:focus,select:focus{outline:2px solid rgba(168,135,75,.28);border-color:var(--gold)}
+button,.button{
+  display:inline-flex;align-items:center;justify-content:center;cursor:pointer;
+  background:linear-gradient(180deg,#b28d51,#8f6c3b);color:#fff;border-color:#8f6c3b;
+  padding:10px 18px;font-weight:700;letter-spacing:.05em;
+}
+button:hover,.button:hover{background:linear-gradient(180deg,#c3a15f,#9a7643);text-decoration:none}
+.button.ghost{background:#fff;color:var(--accent);border-color:var(--gold-soft)}
+.toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:16px 0}
+.muted{color:var(--muted)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px}
+.result-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:15px}
+.card{
+  position:relative;display:block;padding:18px 18px 16px;background:var(--card);
+  border:1px solid var(--line);border-radius:4px;color:inherit;
+  box-shadow:0 5px 18px rgba(61,47,29,.07);transition:transform .18s ease,border-color .18s ease,box-shadow .18s ease;
+}
+a.card:hover{transform:translateY(-2px);border-color:var(--gold-soft);text-decoration:none;box-shadow:0 10px 26px rgba(61,47,29,.12)}
+.card .category{font-size:12px;color:var(--gold);letter-spacing:.08em;margin:0 0 4px}
+.card h2,.card h3{margin:.15rem 0 .45rem;font-size:20px;line-height:1.35}
+.card .preview{color:#5b5348;font-size:14px;line-height:1.7;margin:0}
+.empty{padding:42px 20px;text-align:center;color:var(--muted);border:1px dashed var(--line);background:rgba(255,253,248,.6)}
+.article-card{
+  position:relative;margin:0 0 24px;padding:26px 28px 24px;background:var(--card);
+  border:1px solid var(--line);border-radius:4px;box-shadow:0 6px 22px rgba(61,47,29,.07);
+  page-break-inside:avoid;break-inside:avoid;
+}
+.article-card>.category{font-size:12px;color:var(--gold);letter-spacing:.12em;text-transform:uppercase;margin:0 0 4px}
+.article-card h1,.article-card h2{margin:.1rem 0 .55rem;font-size:30px;line-height:1.35}
+.source{margin-top:18px;padding-top:12px;border-top:1px solid var(--line);color:var(--muted);font-size:13px;word-break:break-all}
+.source a{color:var(--water)}
+.content{white-space:normal;font-size:16.5px}
+.content p{margin:0 0 1em;text-align:justify}
+.content h3,.content h4{margin:1.5em 0 .55em;color:var(--accent);font-size:20px}
+.content h4{font-size:18px}
+.story-step{margin:0 0 20px;padding-left:14px;border-left:2px solid var(--paper-deep)}
+.story-step h4{margin-top:0}
+.dialogue{margin:0 0 12px;padding:10px 14px 10px 15px;background:#fbf7ef;border-left:3px solid var(--gold-soft);border-radius:0 3px 3px 0}
+.dialogue .role{display:block;font-size:12px;font-weight:700;letter-spacing:.08em;color:var(--gold);margin-bottom:2px}
+.dialogue .text{margin:0;color:#3d3932}
+.dialogue.blank{border-left-color:#b9c8cf;background:#f5f8f9}
+.dialogue.blank .role{color:var(--water)}
+.quote-list{display:grid;gap:0;margin-top:12px}
+.quote-item{padding:15px 0;border-bottom:1px solid var(--line)}
+.quote-item:last-child{border-bottom:0}
+.quote-item .role{font-weight:700;color:var(--accent)}
+.quote-item .tips{display:block;margin-top:5px;color:var(--muted);font-size:12px}
+.info-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px 18px;margin-top:16px}
+.info-grid div{border-bottom:1px dashed var(--line);padding-bottom:7px}
+.info-grid .label{display:block;font-size:12px;color:var(--gold);letter-spacing:.08em}
+.tabs{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 18px}
+.tabs a{padding:7px 12px;border:1px solid var(--line);background:#fffdf8;color:var(--accent)}
+.tabs a.active{background:var(--nav);color:var(--nav-ink);border-color:var(--nav)}
+@media (max-width:760px){
+  .searchbar{grid-template-columns:1fr}
+  .hero{padding:24px 16px}
+  .article-card{padding:20px 16px}
+}
+@media print{
+  @page{size:A4;margin:13mm 14mm}
+  :root{--paper:#fff;--paper-deep:#f2ede4;--card:#fff}
+  body{background:#fff;font-size:10.5pt;line-height:1.62}
+  .topnav,.toolbar,.tabs,.no-print{display:none!important}
+  .shell{max-width:none;padding:0}
+  .hero,.card,.article-card{box-shadow:none;border-color:#d8cfbe;background:#fff}
+  a{color:inherit;text-decoration:none}
+  .source a{word-break:break-all}
+  .dialogue,.quote-item,.article-card,.story-step{page-break-inside:avoid;break-inside:avoid}
+}
+"""
+
+
+def _clean_text(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    value = re.sub(r"<br\s*/?>", "\n", value, flags=re.I)
+    value = re.sub(r"<[^>]+>", "", value)
+    value = value.replace("\\n", "\n").replace("{NL}", "\n")
+    return re.sub(r"\n{3,}", "\n\n", value).strip()
+
+
+def _as_list(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    return [value]
+
+
+def _unwrap(payload: Any) -> Any:
+    return payload.get("data", payload) if isinstance(payload, dict) else payload
+
+
+def load_json(path: Path) -> Any | None:
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def resolve_payload_path(payload_path: str | None) -> Path | None:
+    if not payload_path:
+        return None
+    path = Path(payload_path)
+    if not path.is_absolute():
+        path = ROOT / path
+    return path
+
+
+def raw_payload(row: Any, raw_dir: Path) -> dict[str, Any] | None:
+    """Return the unwrapped item object for a database row."""
+    payload_path = resolve_payload_path(row.get("payload_path") if hasattr(row, "get") else getattr(row, "payload_path", None))
+    payload = load_json(payload_path) if payload_path else None
+    if payload is not None:
+        return _unwrap(payload)
+
+    source_key = row["source_key"] if hasattr(row, "__getitem__") else getattr(row, "source_key")
+    category, item_id = source_key.split(":", 1)
+    payload = load_json(raw_dir / category / f"{item_id}.json")
+    return _unwrap(payload) if payload is not None else None
+
+
+def _linked_payload(category: str, item_id: str, raw_dir: Path) -> dict[str, Any] | None:
+    payload = load_json(raw_dir / "_linked" / category / f"{item_id}.json")
+    if not isinstance(payload, dict):
+        return None
+    sections = payload.get("sections") or []
+    for section in sections:
+        if isinstance(section, dict) and "数据" not in str(section.get("heading", "")):
+            pass
+    # The crawler stores one or more sections with `data`; the avatar feed
+    # only has one section named "角色故事与语音".
+    for section in sections:
+        if isinstance(section, dict) and isinstance(section.get("data"), dict):
+            return section["data"]
+    return None
+
+
+def _paragraphs(text: str) -> list[str]:
+    text = _clean_text(text)
+    return [line.strip() for line in text.split("\n") if line.strip()]
+
+
+def _dedup(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[tuple[str, str]] = set()
+    result: list[dict[str, Any]] = []
+    for item in items:
+        signature = (item.get("title", ""), item.get("text", ""))
+        if signature not in seen:
+            seen.add(signature)
+            result.append(item)
+    return result
+
+
+def _cv_text(cv: Any) -> str:
+    if not isinstance(cv, dict):
+        return ""
+    labels = (("CHS", "中"), ("JP", "日"), ("EN", "英"), ("KR", "韩"))
+    return "　".join(f"{label}：{cv[key]}" for key, label in labels if isinstance(cv.get(key), str) and cv[key])
+
+
+def _label(value: str, mapping: dict[str, str]) -> str:
+    value = _clean_text(value)
+    return mapping.get(value, value)
+
+
+def _birthday_text(value: Any) -> str:
+    if isinstance(value, list) and len(value) >= 2:
+        try:
+            month, day = int(value[0]), int(value[1])
+            return f"{month}月{day}日" if month > 0 and day > 0 else ""
+        except (TypeError, ValueError):
+            pass
+    return _clean_text(value)
+
+
+def character_groups(store: Any, raw_dir: Path = DEFAULT_RAW_DIR) -> list[dict[str, Any]]:
+    rows = store.conn.execute(
+        "SELECT source_key, title, payload_path FROM documents WHERE category='角色/故事' ORDER BY source_key"
+    ).fetchall()
+    groups: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
+    for row in rows:
+        title = row["title"].strip()
+        group = groups.get(title)
+        if group is None:
+            group = {
+                "key": title,
+                "title": title,
+                "variants": [],
+                "base_id": None,
+                "first_source_key": row["source_key"],
+                "element": "",
+            }
+            groups[title] = group
+        source_key = row["source_key"]
+        item_id = source_key.split(":", 1)[1]
+        base_id = item_id.split("-", 1)[0]
+        if group["base_id"] is None:
+            group["base_id"] = base_id
+        variant = {
+            "source_key": source_key,
+            "item_id": item_id,
+            "base_id": base_id,
+            "payload_path": row["payload_path"],
+        }
+        group["variants"].append(variant)
+        payload = raw_payload(row, raw_dir) if row["payload_path"] else None
+        if isinstance(payload, dict):
+            element = _label(payload.get("element"), ELEMENT_LABELS)
+            if element and not group["element"]:
+                group["element"] = element
+    for group in groups.values():
+        group["variant_count"] = len(group["variants"])
+    return list(groups.values())
+
+
+def matching_character_groups(
+    store: Any,
+    raw_dir: Path = DEFAULT_RAW_DIR,
+    query: str = "",
+) -> list[dict[str, Any]]:
+    """Prefer exact character-name matches; fall back to full-text matches."""
+    groups = character_groups(store, raw_dir)
+    query = query.strip()
+    if not query:
+        return groups
+
+    title_matches = [item for item in groups if query in item["title"]]
+    if title_matches:
+        return title_matches
+
+    found = store.search(query, "角色/故事", 500)
+    titles = {row["title"] for row in found if row["category"] == "角色/故事"}
+    return [item for item in groups if item["title"] in titles]
+
+
+def character_profile(store: Any, key: str, raw_dir: Path = DEFAULT_RAW_DIR) -> dict[str, Any] | None:
+    """Build the combined profile for one character (grouped by display title)."""
+    groups = character_groups(store, raw_dir)
+    group = next((item for item in groups if item["key"] == key or item["title"] == key), None)
+    if group is None:
+        return None
+
+    basic: dict[str, str] = {
+        "name": group["title"],
+        "title": "",
+        "detail": "",
+        "constellation": "",
+        "native": "",
+        "birthday": "",
+        "element": group.get("element", ""),
+        "weaponType": "",
+        "region": "",
+        "cv": "",
+    }
+    stories: list[dict[str, Any]] = []
+    quotes: list[dict[str, Any]] = []
+
+    for variant in group["variants"]:
+        payload = None
+        payload_path = resolve_payload_path(variant.get("payload_path"))
+        if payload_path:
+            payload = load_json(payload_path)
+            if payload is not None:
+                payload = _unwrap(payload)
+        if payload is None:
+            payload = load_json(raw_dir / "avatar" / f"{variant['item_id']}.json")
+            if payload is not None:
+                payload = _unwrap(payload)
+
+        if isinstance(payload, dict):
+            fetter = payload.get("fetter") or {}
+            if isinstance(fetter, dict):
+                if not basic["title"]:
+                    basic["title"] = _clean_text(fetter.get("title"))
+                if not basic["detail"]:
+                    basic["detail"] = _clean_text(fetter.get("detail"))
+                if not basic["constellation"]:
+                    basic["constellation"] = _clean_text(fetter.get("constellation"))
+                if not basic["native"]:
+                    native = _clean_text(fetter.get("native"))
+                    if native not in {"——", "-", "--"}:
+                        basic["native"] = native
+                if not basic["cv"]:
+                    basic["cv"] = _cv_text(fetter.get("cv"))
+            if not basic["element"]:
+                basic["element"] = _label(payload.get("element"), ELEMENT_LABELS)
+            if not basic["weaponType"]:
+                basic["weaponType"] = _label(payload.get("weaponType"), WEAPON_LABELS)
+            if not basic["region"]:
+                basic["region"] = _label(payload.get("region"), REGION_LABELS)
+            if not basic["birthday"]:
+                basic["birthday"] = _birthday_text(payload.get("birthday"))
+
+        linked = _linked_payload("avatar", variant["item_id"], raw_dir)
+        if isinstance(linked, dict):
+            story_data = linked.get("story")
+            quote_data = linked.get("quotes")
+            if isinstance(story_data, dict):
+                for _, item in sorted(story_data.items(), key=lambda kv: _int_key(kv[0])):
+                    if not isinstance(item, dict):
+                        continue
+                    text = _clean_text(item.get("text"))
+                    text2 = _clean_text(item.get("text2"))
+                    if text2:
+                        text = f"{text}\n\n{text2}" if text else text2
+                    if text:
+                        stories.append({
+                            "title": _clean_text(item.get("title")) or "角色故事",
+                            "text": text,
+                            "tips": _clean_text(item.get("tips")),
+                        })
+            if isinstance(quote_data, dict):
+                for _, item in sorted(quote_data.items(), key=lambda kv: _int_key(kv[0])):
+                    if not isinstance(item, dict):
+                        continue
+                    text = _clean_text(item.get("text"))
+                    if text:
+                        quotes.append({
+                            "title": _clean_text(item.get("title")) or "语音",
+                            "text": text,
+                            "tips": _clean_text(item.get("tips")),
+                        })
+
+    # For older caches the linked file may be absent; fall back to the already
+    # collected content instead of silently showing an empty page.
+    if not stories and not quotes:
+        rows = store.conn.execute(
+            "SELECT content FROM documents WHERE category='角色/故事' AND title=?",
+            (group["title"],),
+        ).fetchall()
+        fallback_blocks = _generic_blocks(rows[0]["content"]) if rows else []
+        if fallback_blocks:
+            stories.append({"title": "角色故事与语音", "text": "\n\n".join(block[1] for block in fallback_blocks), "tips": ""})
+
+    return {
+        "key": group["key"],
+        "basic": basic,
+        "stories": _dedup(stories),
+        "quotes": _dedup(quotes),
+        "variants": group["variants"],
+        "source_url": f"https://gi.yatta.moe/api/v2/chs/avatar/{group['variants'][0]['item_id']}",
+    }
+
+
+def _int_key(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _dialogue_parts(item: dict[str, Any]) -> list[str]:
+    texts: list[str] = []
+    for part in _as_list(item.get("text")):
+        if isinstance(part, str):
+            texts.append(part)
+        elif isinstance(part, dict):
+            value = part.get("text")
+            if isinstance(value, str):
+                texts.append(value)
+    return texts
+
+
+def quest_sections(row: Any, raw_dir: Path = DEFAULT_RAW_DIR) -> list[dict[str, Any]]:
+    """Turn a quest payload into game-review-like story sections."""
+    payload = raw_payload(row, raw_dir)
+    if not isinstance(payload, dict):
+        return []
+
+    info = payload.get("info") or {}
+    chapter_num = _clean_text(info.get("chapterNum"))
+    chapter_title = _clean_text(info.get("chapterTitle"))
+    image_title = _clean_text(info.get("chapterImageTitle"))
+    if chapter_num or chapter_title:
+        top_title = "　".join(part for part in (chapter_num, chapter_title) if part)
+    else:
+        top_title = _clean_text(row["title"])
+
+    sections: list[dict[str, Any]] = [
+        {
+            "title": top_title,
+            "subtitle": image_title,
+            "kind": "quest-intro",
+            "stories": [],
+        }
+    ]
+
+    story_list = payload.get("storyList") or {}
+    if isinstance(story_list, dict):
+        story_items = sorted(story_list.items(), key=lambda kv: _int_key(kv[0]))
+    else:
+        story_items = [(str(i), item) for i, item in enumerate(_as_list(story_list))]
+
+    for story_key, story in story_items:
+        if not isinstance(story, dict):
+            continue
+        story_info = story.get("info") or {}
+        story_title = _clean_text(story_info.get("title")) or f"剧情 {story_key}"
+        description = _clean_text(story_info.get("description"))
+        steps: list[dict[str, Any]] = []
+        step_data = story.get("story") or {}
+        if isinstance(step_data, dict):
+            step_items = sorted(step_data.items(), key=lambda kv: _int_key(kv[0]))
+        else:
+            step_items = [(str(i), step) for i, step in enumerate(_as_list(step_data))]
+
+        for step_key, step in step_items:
+            if not isinstance(step, dict):
+                continue
+            step_title = _clean_text(step.get("title")) or f"步骤 {step_key}"
+            dialogues: list[dict[str, str]] = []
+            for task in _as_list(step.get("taskData")):
+                if not isinstance(task, dict):
+                    continue
+                items = task.get("items") or {}
+                if isinstance(items, dict):
+                    ordered = sorted(items.items(), key=lambda kv: _int_key(kv[0]))
+                else:
+                    ordered = [(str(i), item) for i, item in enumerate(_as_list(items))]
+                for _, item in ordered:
+                    if not isinstance(item, dict):
+                        continue
+                    role = _clean_text(item.get("role"))
+                    for text in _dialogue_parts(item):
+                        if text.strip():
+                            dialogues.append({"role": role, "text": _clean_text(text)})
+            if dialogues:
+                steps.append({"title": step_title, "dialogues": dialogues})
+        sections.append({
+            "title": story_title,
+            "subtitle": description,
+            "kind": "quest-story",
+            "steps": steps,
+        })
+    return sections
+
+
+def _generic_blocks(content: str) -> list[tuple[str, str]]:
+    blocks: list[tuple[str, str]] = []
+    heading: str | None = None
+    body: list[str] = []
+
+    def flush() -> None:
+        nonlocal heading, body
+        text = "\n\n".join(part.strip() for part in ("\n".join(body)).split("\n\n") if part.strip())
+        if heading or text:
+            blocks.append((heading or "", text))
+        heading = None
+        body = []
+
+    for raw_line in content.splitlines():
+        line = raw_line.rstrip()
+        if line.startswith("##"):
+            flush()
+            heading = _clean_heading(line)
+        elif line.strip():
+            body.append(line.strip())
+    flush()
+    return blocks
+
+
+def _clean_heading(line: str) -> str:
+    value = re.sub(r"^#+\s*", "", line).strip()
+    parts = [part.strip() for part in value.split("/") if part.strip()]
+    generic = {
+        "name", "description", "text", "title", "detail", "content", "info",
+        "list", "items", "item", "volume", "suit", "story", "task data",
+        "data", "0", "1", "2", "3", "4", "5",
+    }
+    kept = [part for part in parts if part.lower() not in generic]
+    if not kept:
+        kept = parts[-1:]
+    # Turn technical snake-case labels into readable Chinese-like labels.
+    readable = []
+    for part in kept:
+        part = part.replace("_", " ")
+        part = re.sub(r"(?<!^)(?=[A-Z])", " ", part)
+        readable.append(" ".join(part.split()).strip())
+    return " · ".join(readable) if readable else "正文"
+
+
+def generic_content_html(content: str) -> str:
+    parts: list[str] = []
+    for heading, body in _generic_blocks(content):
+        if heading:
+            parts.append(f'<h3 class="section-title">{html.escape(heading)}</h3>')
+        if body:
+            for paragraph in body.split("\n\n"):
+                parts.append(f"<p>{html.escape(paragraph).replace(chr(10), '<br>')}</p>")
+    return "\n".join(parts)
+
+
+def document_inner_html(row: Any, raw_dir: Path = DEFAULT_RAW_DIR) -> str:
+    source_key = row["source_key"]
+    category = row["category"]
+    if source_key.startswith("quest:"):
+        sections = quest_sections(row, raw_dir)
+        if sections:
+            parts: list[str] = []
+            for section in sections:
+                parts.append(f'<h3>{html.escape(section["title"])}</h3>')
+                if section.get("subtitle"):
+                    parts.append(f'<p class="muted">{html.escape(section["subtitle"])}</p>')
+                for step in section.get("steps", []):
+                    parts.append(f'<div class="story-step"><h4>{html.escape(step["title"])}</h4>')
+                    for dialogue in step["dialogues"]:
+                        role = dialogue["role"]
+                        cls = "dialogue" if role else "dialogue blank"
+                        role_html = f'<span class="role">{html.escape(role) if role else "旁白"}</span>'
+                        parts.append(f'<div class="{cls}">{role_html}<p class="text">{html.escape(dialogue["text"]).replace(chr(10), "<br>")}</p></div>')
+                    parts.append("</div>")
+            return "\n".join(parts)
+    return generic_content_html(row["content"])
+
+
+def character_inner_html(profile: dict[str, Any]) -> str:
+    basic = profile["basic"]
+    parts: list[str] = []
+    info_fields = [
+        ("称号", basic.get("title")),
+        ("命之座", basic.get("constellation")),
+        ("所属", basic.get("native")),
+        ("元素", basic.get("element")),
+        ("武器", basic.get("weaponType")),
+        ("地区", basic.get("region")),
+        ("生日", basic.get("birthday")),
+    ]
+    fields = [(label, value) for label, value in info_fields if value]
+    if fields:
+        parts.append('<div class="info-grid">')
+        for label, value in fields:
+            parts.append(f'<div><span class="label">{label}</span>{html.escape(value)}</div>')
+        parts.append("</div>")
+    if basic.get("detail"):
+        parts.append(f'<p class="detail">{html.escape(basic["detail"])}</p>')
+    if basic.get("cv"):
+        parts.append(f'<p class="muted">配音　{html.escape(basic["cv"])}</p>')
+
+    parts.append('<h3 class="section-title">角色故事</h3>')
+    if profile["stories"]:
+        for story in profile["stories"]:
+            parts.append('<section class="quote-item">')
+            parts.append(f'<h4 class="role">{html.escape(story["title"])}</h4>')
+            parts.append(f'<p>{html.escape(story["text"]).replace(chr(10), "<br>")}</p>')
+            if story.get("tips"):
+                parts.append(f'<span class="tips">{html.escape(story["tips"])}</span>')
+            parts.append("</section>")
+    else:
+        parts.append('<p class="muted">暂无已采集的角色故事。</p>')
+
+    parts.append('<h3 class="section-title">角色语音</h3>')
+    if profile["quotes"]:
+        for quote in profile["quotes"]:
+            parts.append('<section class="quote-item">')
+            parts.append(f'<h4 class="role">{html.escape(quote["title"])}</h4>')
+            parts.append(f'<p>{html.escape(quote["text"]).replace(chr(10), "<br>")}</p>')
+            if quote.get("tips"):
+                parts.append(f'<span class="tips">{html.escape(quote["tips"])}</span>')
+            parts.append("</section>")
+    else:
+        parts.append('<p class="muted">暂无已采集的角色语音。</p>')
+    return "\n".join(parts)
+
+
+def row_dict(row: Any) -> dict[str, Any]:
+    return {
+        "source_key": row["source_key"],
+        "category": row["category"],
+        "title": row["title"],
+        "content": row["content"],
+        "source_url": row["source_url"],
+        "payload_path": row["payload_path"],
+    }
+
+
+def chrome_pdf(html_text: str, output: Path, chrome: str = "google-chrome") -> None:
+    """Render local HTML to PDF with the same CSS as the web page."""
+    output = Path(output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", suffix=".html", encoding="utf-8", delete=False) as handle:
+        handle.write(html_text)
+        html_path = Path(handle.name)
+    try:
+        cmd = [
+            chrome,
+            "--headless",
+            "--disable-gpu",
+            "--no-sandbox",
+            "--no-pdf-header-footer",
+            f"--print-to-pdf={output}",
+            html_path.as_uri(),
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if proc.returncode != 0:
+            raise RuntimeError((proc.stderr or proc.stdout or "Chrome exited with an error").strip())
+    finally:
+        html_path.unlink(missing_ok=True)
+
+
+def html_to_pdf_bytes(html_text: str, chrome: str = "google-chrome") -> bytes:
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as handle:
+        output = Path(handle.name)
+    try:
+        chrome_pdf(html_text, output, chrome=chrome)
+        return output.read_bytes()
+    finally:
+        output.unlink(missing_ok=True)
+
+
+def html_export_page(title: str, body_html: str, active: str = "") -> str:
+    nav = "".join(
+        f'<a href="{html.escape(item["href"])}" class="{"active" if item["key"] == active else ""}">{html.escape(item["label"])}</a>'
+        for item in NAV_ITEMS
+    )
+    return f"""<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{html.escape(title)} · 原神文本收藏</title><style>{BASE_CSS}</style>
+<body><nav class="topnav no-print"><span class="brand">原神文本收藏</span>{nav}</nav>
+<main class="shell">
+<div class="article-card">{body_html}</div>
+</main></body></html>"""
+
+
+def html_character_page(profile: dict[str, Any], title: str | None = None) -> str:
+    body = f'<p class="category">角色资料</p><h1>{html.escape(profile["basic"]["name"])}</h1>'
+    body += '<div class="ornament">◆</div>'
+    body += character_inner_html(profile)
+    body += f'<p class="source">数据来源：<a href="{html.escape(profile["source_url"], quote=True)}">{html.escape(profile["source_url"])}</a></p>'
+    return html_export_page(title or profile["basic"]["name"], body, "characters")
+
+
+def collection_body(
+    store: Any,
+    rows: Iterable[Any],
+    raw_dir: Path = DEFAULT_RAW_DIR,
+    query: str = "",
+) -> str:
+    """Render a mixed collection while merging character rows into profiles."""
+    rows = list(rows)
+    avatar_rows = [row for row in rows if row["category"] == "角色/故事"]
+    other_rows = [row for row in rows if row["category"] != "角色/故事"]
+
+    parts: list[str] = [
+        '<p class="category">检索导出</p><h1>原神文本收藏</h1><div class="ornament">◆</div>'
+    ]
+
+    if avatar_rows:
+        groups = matching_character_groups(store, raw_dir, query)
+        for item in groups:
+            profile = character_profile(store, item["key"], raw_dir)
+            if profile is None:
+                continue
+            parts.append(
+                f'<section class="article-card"><p class="category">角色资料</p>'
+                f'<h2>{html.escape(profile["basic"]["name"])}</h2>'
+            )
+            parts.append(character_inner_html(profile))
+            parts.append(
+                f'<p class="source">数据来源：<a href="{html.escape(profile["source_url"], quote=True)}">'
+                f'{html.escape(profile["source_url"])}</a></p></section>'
+            )
+
+    for row in other_rows:
+        parts.append(
+            f'<section class="article-card"><p class="category">{html.escape(row["category"])}</p>'
+            f'<h2>{html.escape(row["title"])}</h2>'
+            + document_inner_html(row, raw_dir)
+            + f'<p class="source">来源：<a href="{html.escape(row["source_url"], quote=True)}">'
+            + html.escape(row["source_url"])
+            + "</a></p></section>"
+        )
+    return "\n".join(parts)
